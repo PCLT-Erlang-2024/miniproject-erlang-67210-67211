@@ -5,6 +5,7 @@
 -record(product, {id, size}).
 
 -define(NUM_PRODUCTS, 20).
+-define(NUM_CONVEYOR_BELTS, 2).
 
 generate_products(Pids) ->
     F = fun() -> generate_products(Pids, 1) end,
@@ -25,13 +26,14 @@ generate_products(Pids, Id) ->
     generate_products(Pids, Id + 1).
 
 start_conveyor_belts() ->
-    Pids = [spawn(?MODULE, conveyor_belt, [Id]) || Id <- lists:seq(1, 6)],
+    Pids = [spawn(?MODULE, conveyor_belt, [Id]) || Id <- lists:seq(1, ?NUM_CONVEYOR_BELTS)],
     Pids.
 
 conveyor_belt(Id) ->
     receive
         {product, Product} ->
             io:format("~p :: Received product ~p~n", [Id, Product]),
+            timer:sleep(2000),
             conveyor_belt(Id);
         {stop, stop} ->
             io:format("~p :: Stopping~n", [Id])
