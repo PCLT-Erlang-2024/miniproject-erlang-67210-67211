@@ -1,8 +1,9 @@
 -module(task1).
 
--export([main/0, conveyor_belt/1]).
+-export([main/0, conveyor_belt/3]).
 
 -record(product, {id, size}).
+-record(truck, {id, capacity, load}).
 
 -define(NUM_PRODUCTS, 20).
 -define(NUM_CONVEYOR_BELTS, 2).
@@ -29,15 +30,39 @@ start_conveyor_belts() ->
     Pids = [spawn(?MODULE, conveyor_belt, [Id]) || Id <- lists:seq(1, ?NUM_CONVEYOR_BELTS)],
     Pids.
 
-conveyor_belt(Id) ->
+conveyor_belt(Id, Truck, TPPid) ->
     receive
         {product, Product} ->
             io:format("~p :: Received product ~p~n", [Id, Product]),
             timer:sleep(2000),
-            conveyor_belt(Id);
+            case Truck of
+                null ->
+                    io:format("~p :: No trucks available~n", [Id]),
+                    TPPid ! {truck, please},
+                    receive
+                        {truck, Truck} ->
+                            io:format("~p :: Received truck ~p~n", [Id, Truck]),
+                            process_product(Product, Truck)
+                    end;
+                Truck ->
+                    process_product(Product, Truck)
+            end,
+            conveyor_belt(Id, Truck, TPPid);
         {stop, stop} ->
             io:format("~p :: Stopping~n", [Id])
     end.
+
+provide_truck(CBPid, Id) -> 
+    receive 
+        {truck, please} -> 
+            io:format("Received truck request~n"),
+            CBPid ! {truck, #truck{id = Id, capacity = 10, load = 0}}
+    end.
+
+process_product(Product, Truck) ->
+    
+    ok.
+
 
 main() ->
     Pids = start_conveyor_belts(),
