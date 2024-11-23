@@ -1,5 +1,7 @@
 -module(task1).
--export([main/0, start_conveyor_belts/1, generate_products/2, conveyor_belt/4, start_truck_provider/0, truck_provider/1, process_product/2]).
+
+-export([main/0, start_conveyor_belts/0, start_generate_products/1, conveyor_belt/3,
+         truck_provider/0, process_product/2]).
 
 -define(NUM_PRODUCTS, 20).
 -define(NUM_CONVEYOR_BELTS, 2).
@@ -7,105 +9,144 @@
 -record(truck, {id, capacity, load}).
 -record(product, {id, size}).
 
-generate_products(Pids, MainPid) ->
-    F = fun() -> generate_products(Pids, 1, MainPid) end,
+log_with_time(Format, Args) ->
+    {{Year, Month, Day}, {Hour, Minute, Second}} = calendar:universal_time(),
+    DateTimeString =
+        io_lib:format("~4..0B-~2..0B-~2..0B ~2..0B:~2..0B:~2..0B",
+                      [Year, Month, Day, Hour, Minute, Second]),
+    LogMessage = io_lib:format(Format, Args),
+    io:format("[~s] ~s~n", [DateTimeString, LogMessage]).
+
+log_with_time(Format) ->
+    log_with_time(Format, []).
+
+get_cb_process_alias(Id) ->
+    list_to_atom("cb" ++ integer_to_list(Id)).
+
+start_generate_products(MainPid) ->
+    F = fun() -> generate_products(MainPid) end,
     spawn(F).
 
-generate_products(Pids, ?NUM_PRODUCTS, MainPid) ->
-    Product = #product{id = ?NUM_PRODUCTS, size = rand:uniform(5)},
-    io:format("Generated product: ~p~n", [Product]),
-    Pid = lists:nth(?NUM_PRODUCTS rem length(Pids) + 1, Pids),
-    Pid ! {product, Product},
-    [EndPid ! {stop, stop} || EndPid <- Pids],
-    MainPid ! {all_products_generated, ?NUM_PRODUCTS};
-generate_products(Pids, Id, MainPid) ->
-    Product = #product{id = Id, size = rand:uniform(5)},
-    io:format("Generated product: ~p~n", [Product]),
-    Pid = lists:nth(Id rem length(Pids) + 1, Pids),
-    Pid ! {product, Product},
+generate_products(MainPid) ->
+    generate_products(1, MainPid).
+
+generate_products(Id, MainPid) when Id =< ?NUM_PRODUCTS ->
+    Product = create_product(Id),
+    log_with_time("Generate Products: Product ~p with size ~p",
+                  [Product#product.id, Product#product.size]),
+    CbId = Id rem ?NUM_CONVEYOR_BELTS + 1,
+    get_cb_process_alias(CbId) ! {product, Product},
     timer:sleep(500),
-    generate_products(Pids, Id + 1, MainPid).
+    generate_products(Id + 1, MainPid);
+generate_products(_, MainPid) ->
+    [get_cb_process_alias(CbId) ! {stop, stop} || CbId <- lists:seq(1, ?NUM_CONVEYOR_BELTS)],
+    tp ! {stop, stop},
+    MainPid ! {all_products_generated, ?NUM_PRODUCTS}.
 
-start_conveyor_belts(TPId) ->
-    Pids = [spawn(?MODULE, conveyor_belt, [Id, {waiting_for_product, null}, TPId, self()]) || Id <- lists:seq(1, ?NUM_CONVEYOR_BELTS)],
-    Pids.
+create_product(Id) ->
+    #product{id = Id, size = 3}.
 
-conveyor_belt(Id, State, TPPid, MainPid) ->
+start_conveyor_belts() ->
+    [register(get_cb_process_alias(Id),
+              spawn(?MODULE, conveyor_belt, [Id, {waiting_for_product, null}, self()]))
+     || Id <- lists:seq(1, ?NUM_CONVEYOR_BELTS)].
+
+conveyor_belt(Id, State, MainPid) ->
     receive
         {product, Product} ->
-            handle_product(Id, Product, State, TPPid, MainPid);
+            handle_product(Id, Product, State, MainPid);
         {truck, Truck} ->
-            handle_truck(Id, Truck, State, TPPid, MainPid);
+            handle_truck(Id, Truck, State, MainPid);
         {stop, stop} ->
-            io:format("~p :: Stopping~n", [Id])
+            log_with_time("Conveyor Belt ~p :: Stopping", [Id])
     end.
 
-handle_product(Id, Product, {waiting_for_product, Truck}, TPPid, MainPid) when Truck =/= null ->
-    io:format("~p :: Processing product ~p with truck ~p~n", [Id, Product, Truck]),
+handle_product(Id, Product, {waiting_for_product, Truck}, MainPid) when Truck =/= null ->
+    log_with_time("Conveyor Belt ~p :: Processing product ~p with truck ~p",
+                  [Id, Product#product.id, Truck#truck.id]),
     case process_product(Product, Truck) of
         {ok, UpdatedTruck} ->
             MainPid ! {product_processed, Id},
-            conveyor_belt(Id, {waiting_for_product, UpdatedTruck}, TPPid, MainPid);
+            conveyor_belt(Id, {waiting_for_product, UpdatedTruck}, MainPid);
         {error, RemainingProduct} ->
-            io:format("~p :: Truck capacity exceeded, requesting new truck~n", [Id]),
-            request_and_receive_truck(Id, RemainingProduct, TPPid, MainPid)
+            log_with_time("Conveyor Belt ~p :: Truck capacity exceeded, requesting new "
+                          "truck",
+                          [Id]),
+            request_and_receive_truck(Id, RemainingProduct, MainPid)
     end;
-handle_product(Id, Product, {waiting_for_product, _}, TPPid, MainPid) ->
-    io:format("~p :: Received product ~p, waiting for truck~n", [Id, Product]),
-    request_and_receive_truck(Id, Product, TPPid, MainPid).
+% never executes
+handle_product(Id, Product, {waiting_for_product, _}, MainPid) ->
+    log_with_time("Conveyor Belt ~p :: Received product ~p, waiting for truck",
+                  [Id, Product#product.id]),
+    request_and_receive_truck(Id, Product, MainPid).
 
-handle_truck(Id, Truck, {waiting_for_truck, Product}, TPPid, MainPid) ->
-    io:format("~p :: Processing product ~p with truck ~p~n", [Id, Product, Truck]),
+handle_truck(Id, Truck, {waiting_for_truck, Product}, MainPid) ->
+    log_with_time("Conveyor Belt ~p :: Processing product ~p with truck ~p",
+                  [Id, Product#product.id, Truck#truck.id]),
     case process_product(Product, Truck) of
         {ok, UpdatedTruck} ->
             MainPid ! {product_processed, Id},
-            conveyor_belt(Id, {waiting_for_product, UpdatedTruck}, TPPid, MainPid);
+            conveyor_belt(Id, {waiting_for_product, UpdatedTruck}, MainPid);
         {error, RemainingProduct} ->
-            io:format("~p :: Truck capacity exceeded, requesting new truck~n", [Id]),
-            request_and_receive_truck(Id, RemainingProduct, TPPid, MainPid)
+            log_with_time("Conveyor Belt ~p :: Truck capacity exceeded, requesting new "
+                          "truck",
+                          [Id]),
+            request_and_receive_truck(Id, RemainingProduct, MainPid)
     end;
-handle_truck(Id, Truck, {waiting_for_product, _}, TPPid, MainPid) ->
-    io:format("~p :: Received truck ~p, waiting for product~n", [Id, Truck]),
-    conveyor_belt(Id, {waiting_for_truck, Truck}, TPPid, MainPid).
+handle_truck(Id, Truck, {waiting_for_product, _}, MainPid) ->
+    log_with_time("Conveyor Belt ~p :: Received truck ~p, waiting for product",
+                  [Id, Truck#truck.id]),
+    conveyor_belt(Id, {waiting_for_truck, Truck}, MainPid).
 
-request_and_receive_truck(Id, Product, TPPid, MainPid) ->
-    TPPid ! {self(), truck},
-    io:format("~p :: Requested truck from ~p~n", [Id, TPPid]),
+request_and_receive_truck(Id, Product, MainPid) ->
+    tp ! {Id, truck},
+    log_with_time("Conveyor Belt ~p :: Requested truck", [Id]),
     receive
         {truck, Truck} ->
-            io:format("~p :: Received truck ~p~n", [Id, Truck]),
-            handle_product(Id, Product, {waiting_for_product, Truck}, TPPid, MainPid)
+            log_with_time("Conveyor Belt ~p :: Received truck ~p", [Id, Truck#truck.id]),
+            handle_product(Id, Product, {waiting_for_product, Truck}, MainPid)
     end.
 
 start_truck_provider() ->
-    TPId = spawn(?MODULE, truck_provider, [1]),
-    TPId.
+    register(tp, spawn(?MODULE, truck_provider, [])).
 
-truck_provider(Id) -> 
-    receive 
-        {CBPid, truck} -> 
-            io:format("Received truck request from ~p~n", [CBPid]),
-            CBPid ! {truck, #truck{id = Id, capacity = 10, load = 0}},
-            truck_provider(Id + 1)
+truck_provider() ->
+    truck_provider(1).
+
+truck_provider(Id) ->
+    receive
+        {CBId, truck} ->
+            log_with_time("Truck Provider :: Truck request from Conveyor Belt ~p", [CBId]),
+            get_cb_process_alias(CBId)
+            ! {truck,
+               #truck{id = Id,
+                      capacity = 10,
+                      load = 0}},
+            truck_provider(Id + 1);
+        {stop, stop} ->
+            log_with_time("Truck Provider :: Stopping")
     end.
 
 process_product(Product, Truck) ->
     if Truck#truck.load + Product#product.size =< Truck#truck.capacity ->
-        UpdatedTruck = Truck#truck{load = Truck#truck.load + Product#product.size},
-        {ok, UpdatedTruck};
-    true ->
-        RemainingProduct = Product#product{size = Product#product.size - (Truck#truck.capacity - Truck#truck.load)},
-        {error, RemainingProduct}
+           UpdatedTruck = Truck#truck{load = Truck#truck.load + Product#product.size},
+           {ok, UpdatedTruck};
+       true ->
+           RemainingProduct =
+               Product#product{size =
+                                   Product#product.size
+                                   - (Truck#truck.capacity - Truck#truck.load)},
+           {error, RemainingProduct}
     end.
 
 main() ->
-    TPId = start_truck_provider(),
-    Pids = start_conveyor_belts(TPId),
-    generate_products(Pids, self()),
+    start_truck_provider(),
+    start_conveyor_belts(),
+    start_generate_products(self()),
     wait_for_completion(?NUM_PRODUCTS).
 
 wait_for_completion(0) ->
-    io:format("All products processed.~n");
+    log_with_time("All products processed.");
 wait_for_completion(Count) ->
     receive
         {all_products_generated, Total} ->
