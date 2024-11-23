@@ -1,6 +1,6 @@
 -module(task1).
 
--export([main/0, start_conveyor_belts/0, start_generate_products/1, conveyor_belt/3,
+-export([main/0, start_conveyor_belts/0, start_generate_products/1, conveyor_belt/2,
          truck_provider/0, process_product/2]).
 
 -define(NUM_PRODUCTS, 20).
@@ -47,64 +47,44 @@ create_product(Id) ->
     #product{id = Id, size = 3}.
 
 start_conveyor_belts() ->
-    [register(get_cb_process_alias(Id),
-              spawn(?MODULE, conveyor_belt, [Id, {waiting_for_product, null}, self()]))
+    [register(get_cb_process_alias(Id), spawn(?MODULE, conveyor_belt, [Id, self()]))
      || Id <- lists:seq(1, ?NUM_CONVEYOR_BELTS)].
 
-conveyor_belt(Id, State, MainPid) ->
+conveyor_belt(Id, MainPid) ->
+    Truck = get_truck(Id),
+    conveyor_belt(Id, Truck, MainPid).
+
+conveyor_belt(Id, Truck, MainPid) ->
     receive
         {product, Product} ->
-            handle_product(Id, Product, State, MainPid);
-        {truck, Truck} ->
-            handle_truck(Id, Truck, State, MainPid);
+            UpdatedTruck =
+                if Truck#truck.load + Product#product.size > Truck#truck.capacity ->
+                       log_with_time("Conveyor Belt ~p :: Truck ~p can't carry Product ~p",
+                                     [Id, Truck#truck.id, Product#product.id]),
+                       NewTruck = get_truck(Id),
+                       NewTruck#truck{load = Product#product.size};
+                   true ->
+                       Truck#truck{load = Truck#truck.load + Product#product.size}
+                end,
+            log_with_time("Conveyor Belt ~p :: Truck ~p loaded Product ~p (Load: ~p/~p)",
+                          [Id,
+                           UpdatedTruck#truck.id,
+                           Product#product.id,
+                           UpdatedTruck#truck.load,
+                           UpdatedTruck#truck.capacity]),
+            MainPid ! {product_processed, Id},
+            conveyor_belt(Id, UpdatedTruck, MainPid);
         {stop, stop} ->
             log_with_time("Conveyor Belt ~p :: Stopping", [Id])
     end.
 
-handle_product(Id, Product, {waiting_for_product, Truck}, MainPid) when Truck =/= null ->
-    log_with_time("Conveyor Belt ~p :: Processing product ~p with truck ~p",
-                  [Id, Product#product.id, Truck#truck.id]),
-    case process_product(Product, Truck) of
-        {ok, UpdatedTruck} ->
-            MainPid ! {product_processed, Id},
-            conveyor_belt(Id, {waiting_for_product, UpdatedTruck}, MainPid);
-        {error, RemainingProduct} ->
-            log_with_time("Conveyor Belt ~p :: Truck capacity exceeded, requesting new "
-                          "truck",
-                          [Id]),
-            request_and_receive_truck(Id, RemainingProduct, MainPid)
-    end;
-% never executes
-handle_product(Id, Product, {waiting_for_product, _}, MainPid) ->
-    log_with_time("Conveyor Belt ~p :: Received product ~p, waiting for truck",
-                  [Id, Product#product.id]),
-    request_and_receive_truck(Id, Product, MainPid).
-
-handle_truck(Id, Truck, {waiting_for_truck, Product}, MainPid) ->
-    log_with_time("Conveyor Belt ~p :: Processing product ~p with truck ~p",
-                  [Id, Product#product.id, Truck#truck.id]),
-    case process_product(Product, Truck) of
-        {ok, UpdatedTruck} ->
-            MainPid ! {product_processed, Id},
-            conveyor_belt(Id, {waiting_for_product, UpdatedTruck}, MainPid);
-        {error, RemainingProduct} ->
-            log_with_time("Conveyor Belt ~p :: Truck capacity exceeded, requesting new "
-                          "truck",
-                          [Id]),
-            request_and_receive_truck(Id, RemainingProduct, MainPid)
-    end;
-handle_truck(Id, Truck, {waiting_for_product, _}, MainPid) ->
-    log_with_time("Conveyor Belt ~p :: Received truck ~p, waiting for product",
-                  [Id, Truck#truck.id]),
-    conveyor_belt(Id, {waiting_for_truck, Truck}, MainPid).
-
-request_and_receive_truck(Id, Product, MainPid) ->
+get_truck(Id) ->
     tp ! {Id, truck},
     log_with_time("Conveyor Belt ~p :: Requested truck", [Id]),
     receive
         {truck, Truck} ->
-            log_with_time("Conveyor Belt ~p :: Received truck ~p", [Id, Truck#truck.id]),
-            handle_product(Id, Product, {waiting_for_product, Truck}, MainPid)
+            log_with_time("Conveyor Belt ~p :: Received Truck ~p", [Id, Truck#truck.id]),
+            Truck
     end.
 
 start_truck_provider() ->
@@ -140,13 +120,14 @@ process_product(Product, Truck) ->
     end.
 
 main() ->
+    register(main, self()),
     start_truck_provider(),
     start_conveyor_belts(),
     start_generate_products(self()),
     wait_for_completion(?NUM_PRODUCTS).
 
 wait_for_completion(0) ->
-    log_with_time("All products processed.");
+    log_with_time("Main :: All products processed");
 wait_for_completion(Count) ->
     receive
         {all_products_generated, Total} ->
