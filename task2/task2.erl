@@ -91,7 +91,7 @@ conveyor_belt(Id, Truck) ->
     end.
 
 get_truck(Id) ->
-    tp ! {Id, truck},
+    tp ! {truck, Id},
     log_with_time("Conveyor Belt ~p :: Requested truck", [Id]),
     receive
         {truck, Truck} ->
@@ -107,7 +107,7 @@ truck_provider() ->
 
 truck_provider(Id) ->
     receive
-        {CBId, truck} ->
+        {truck, CBId} ->
             log_with_time("Truck Provider :: Truck request from Conveyor Belt ~p", [CBId]),
             get_cb_process_alias(CBId) ! {truck, create_truck(Id)},
             truck_provider(Id + 1);

@@ -1,14 +1,12 @@
--module(task3).
+-module(task1).
 
 -export([main/0, generate_products/0, conveyor_belt/1, truck_provider/0]).
 
 -define(NUM_PRODUCTS, 100).
 -define(PRODUCT_GENERATION_INTERVAL, 500).
 -define(NUM_CONVEYOR_BELTS, 4).
--define(PRODUCT_MIN_SIZE, 1).
--define(PRODUCT_MAX_SIZE, 5).
+-define(PRODUCT_SIZE, 1).
 -define(TRUCK_CAPACITY, 10).
--define(TRUCK_ARRIVAL_INTERVAL, 2000).
 
 -record(truck, {id, capacity, load}).
 -record(product, {id, size}).
@@ -45,9 +43,7 @@ generate_products(_) ->
     log_with_time("Generate Products :: Stopping").
 
 create_product(Id) ->
-    #product{id = Id,
-             size =
-                 rand:uniform(?PRODUCT_MAX_SIZE - ?PRODUCT_MIN_SIZE + 1) + ?PRODUCT_MIN_SIZE - 1}.
+    #product{id = Id, size = ?PRODUCT_SIZE}.
 
 start_conveyor_belts() ->
     [register(get_cb_process_alias(Id), spawn(?MODULE, conveyor_belt, [Id]))
@@ -92,12 +88,10 @@ conveyor_belt(Id, Truck) ->
     end.
 
 get_truck(Id) ->
-    tp ! {Id, truck},
+    tp ! {truck, Id},
     log_with_time("Conveyor Belt ~p :: Requested truck", [Id]),
     receive
         {truck, Truck} ->
-            log_with_time("Conveyor Belt ~p :: Receiving Truck ~p...", [Id, Truck#truck.id]),
-            timer:sleep(?TRUCK_ARRIVAL_INTERVAL),
             log_with_time("Conveyor Belt ~p :: Received Truck ~p", [Id, Truck#truck.id]),
             Truck
     end.
@@ -110,7 +104,7 @@ truck_provider() ->
 
 truck_provider(Id) ->
     receive
-        {CBId, truck} ->
+        {truck, CBId} ->
             log_with_time("Truck Provider :: Truck request from Conveyor Belt ~p", [CBId]),
             get_cb_process_alias(CBId) ! {truck, create_truck(Id)},
             truck_provider(Id + 1);
